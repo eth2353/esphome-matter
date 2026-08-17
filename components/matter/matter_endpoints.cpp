@@ -354,6 +354,10 @@ void MatterClimate::push_state_to_matter() {
              static_cast<unsigned>(*this->climate->fan_mode));
   }
 
+  ESP_LOGI(TAG, "Matter climate endpoint=%u fan_mode=%s",
+           this->endpoint_id,
+           this->climate->fan_mode.has_value() ? "present" : "missing");
+
   const float current_temperature = this->climate->current_temperature;
 
   const float target_temperature = this->climate->target_temperature;
@@ -425,8 +429,12 @@ void MatterClimate::push_state_to_matter() {
     if (has_fan_mode) {
       esp_matter_attr_val_t fan_val = esp_matter_enum8(matter_fan_mode);
 
-      esp_matter::attribute::update(
+      esp_err_t fan_err = esp_matter::attribute::update(
           eid, FanControl::Id, FanControl::Attributes::FanMode::Id, &fan_val);
+
+      ESP_LOGI(TAG,
+               "FanControl push: endpoint=%u Matter=%u result=%s",
+               eid, matter_fan_mode, esp_err_to_name(fan_err));
     }
   });
 }
