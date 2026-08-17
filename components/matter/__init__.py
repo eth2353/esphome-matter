@@ -302,5 +302,6 @@ async def to_code(config: ConfigType):
 
     if any(CONF_THERMOSTAT in ep for ep in config[CONF_ENDPOINTS]):
         add_idf_sdkconfig_option("CONFIG_SUPPORT_THERMOSTAT_CLUSTER", True)
+        add_idf_sdkconfig_option("CONFIG_SUPPORT_FAN_CONTROL_CLUSTER", True)
 
     await configure_endpoints(var, config)
