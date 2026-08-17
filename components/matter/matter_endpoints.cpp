@@ -83,7 +83,7 @@ bool MatterComponent::create_endpoints_(esp_matter::node_t *node) {
   for (auto *mc : this->climates_) {
     auto traits = mc->climate->get_traits();
 
-    esp_matter::endpoint::thermostat::config_t config;
+    esp_matter::endpoint::room_air_conditioner::config_t config;
 
     const bool supports_heat =
         traits.supports_mode(climate::CLIMATE_MODE_HEAT) ||
@@ -176,11 +176,12 @@ bool MatterComponent::create_endpoints_(esp_matter::node_t *node) {
         YESNO(supports_heat), YESNO(supports_cool), YESNO(supports_auto),
         config.thermostat.feature_flags);
 
-    esp_matter::endpoint_t *ep = esp_matter::endpoint::thermostat::create(
-        node, &config, esp_matter::ENDPOINT_FLAG_NONE, nullptr);
+    esp_matter::endpoint_t *ep =
+        esp_matter::endpoint::room_air_conditioner::create(
+            node, &config, esp_matter::ENDPOINT_FLAG_NONE, nullptr);
 
     if (ep == nullptr) {
-      ESP_LOGE(TAG, "Failed to create thermostat endpoint");
+      ESP_LOGE(TAG, "Failed to create Room Air Conditioner endpoint");
       return false;
     }
 
@@ -271,28 +272,15 @@ bool MatterComponent::create_endpoints_(esp_matter::node_t *node) {
         return false;
       }
 
-      // Advertise this same endpoint as both a Thermostat and a Fan.
-      // The thermostat helper already added the Thermostat device type;
-      // adding the Fan device type gives controllers explicit metadata
-      // that this endpoint also exposes fan-speed control.
-      esp_err_t fan_type_err = esp_matter::endpoint::add_device_type(
-          ep, ESP_MATTER_FAN_DEVICE_TYPE_ID,
-          ESP_MATTER_FAN_DEVICE_TYPE_VERSION);
-
-      if (fan_type_err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to add Fan device type: %s",
-                 esp_err_to_name(fan_type_err));
-        return false;
-      }
-
-      ESP_LOGI(TAG,
-               "FanControl cluster + Fan device type added to thermostat endpoint");
+      ESP_LOGI(
+          TAG,
+          "FanControl cluster added to native Room Air Conditioner endpoint");
     }
 
     mc->endpoint_id = esp_matter::endpoint::get_id(ep);
     mc->ref->endpoint_id = mc->endpoint_id;
 
-    ESP_LOGD(TAG, "Thermostat endpoint created: id=%u", mc->endpoint_id);
+    ESP_LOGD(TAG, "Room Air Conditioner endpoint created: id=%u", mc->endpoint_id);
   }
 #endif
 
