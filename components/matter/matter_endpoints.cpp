@@ -79,10 +79,363 @@ bool MatterComponent::create_endpoints_(esp_matter::node_t *node) {
   }
 #endif
 
+#ifdef USE_CLIMATE
+  for (auto *mc : this->climates_) {
+    auto traits = mc->climate->get_traits();
+
+    esp_matter::endpoint::thermostat::config_t config;
+
+    const bool supports_heat =
+        traits.supports_mode(climate::CLIMATE_MODE_HEAT) ||
+        traits.supports_mode(climate::CLIMATE_MODE_HEAT_COOL);
+
+    const bool supports_cool =
+        traits.supports_mode(climate::CLIMATE_MODE_COOL) ||
+        traits.supports_mode(climate::CLIMATE_MODE_HEAT_COOL);
+
+    const bool supports_auto =
+        traits.supports_mode(climate::CLIMATE_MODE_AUTO) ||
+        traits.supports_mode(climate::CLIMATE_MODE_HEAT_COOL);
+
+    //
+    // Matter ControlSequenceOfOperation
+    //
+    // 0 = cooling only
+    // 2 = heating only
+    // 4 = cooling + heating
+    //
+    if (supports_heat && supports_cool) {
+      config.thermostat.control_sequence_of_operation = 4;
+    } else if (supports_heat) {
+      config.thermostat.control_sequence_of_operation = 2;
+    } else {
+      config.thermostat.control_sequence_of_operation = 0;
+    }
+
+    //
+    // Initial local temperature.
+    //
+    if (!std::isnan(mc->climate->current_temperature)) {
+      config.thermostat.local_temperature =
+          nullable<int16_t>(
+              static_cast<int16_t>(
+                  std::lroundf(
+                      mc->climate->current_temperature * 100.0f)));
+    }
+
+    esp_matter::endpoint_t *ep =
+        esp_matter::endpoint::thermostat::create(
+            node,
+            &config,
+            esp_matter::ENDPOINT_FLAG_NONE,
+            nullptr);
+
+    if (ep == nullptr) {
+      ESP_LOGE(TAG, "Failed to create thermostat endpoint");
+      return false;
+    }
+
+    auto *thermostat_cluster = esp_matter::cluster::get(
+        ep,
+        chip::app::Clusters::Thermostat::Id
+    );
+
+    if (supports_heat) {
+      esp_matter::cluster::thermostat::feature::heating::config_t heat_config;
+
+      if (!std::isnan(mc->climate->target_temperature)) {
+        heat_config.occupied_heating_setpoint =
+            static_cast<int16_t>(
+                std::lroundf(mc->climate->target_temperature * 100.0f));
+      }
+
+      esp_matter::cluster::thermostat::feature::heating::add(
+          thermostat_cluster,
+          &heat_config);
+    }
+
+    if (supports_cool) {
+      esp_matter::cluster::thermostat::feature::cooling::config_t cool_config;
+
+      if (!std::isnan(mc->climate->target_temperature)) {
+        cool_config.occupied_cooling_setpoint =
+            static_cast<int16_t>(
+                std::lroundf(mc->climate->target_temperature * 100.0f));
+      }
+
+      esp_matter::cluster::thermostat::feature::cooling::add(
+          thermostat_cluster,
+          &cool_config);
+    }
+
+    if (supports_auto && supports_heat && supports_cool) {
+      esp_matter::cluster::thermostat::feature::auto_mode::config_t auto_config;
+
+      esp_matter::cluster::thermostat::feature::auto_mode::add(
+          thermostat_cluster,
+          &auto_config);
+    }
+
+    mc->endpoint_id = esp_matter::endpoint::get_id(ep);
+    mc->ref->endpoint_id = mc->endpoint_id;
+
+    ESP_LOGD(
+        TAG,
+        "Thermostat endpoint created: id=%u",
+        mc->endpoint_id);
+  }
+#endif // USE_CLIMATE
+
   register_client_request_callbacks();
 
   return true;
 }
+
+#ifdef USE_CLIMATE
+
+static uint8_t climate_mode_to_matter_mode(climate::ClimateMode mode) {
+  using Mode = chip::app::Clusters::Thermostat::SystemModeEnum;
+
+  switch (mode) {
+    case climate::CLIMATE_MODE_OFF:
+      return chip::to_underlying(Mode::kOff);
+
+    case climate::CLIMATE_MODE_COOL:
+      return chip::to_underlying(Mode::kCool);
+
+    case climate::CLIMATE_MODE_HEAT:
+      return chip::to_underlying(Mode::kHeat);
+
+    case climate::CLIMATE_MODE_AUTO:
+    case climate::CLIMATE_MODE_HEAT_COOL:
+      return chip::to_underlying(Mode::kAuto);
+
+    case climate::CLIMATE_MODE_FAN_ONLY:
+      return chip::to_underlying(Mode::kFanOnly);
+
+    case climate::CLIMATE_MODE_DRY:
+      return chip::to_underlying(Mode::kDry);
+
+    default:
+      return chip::to_underlying(Mode::kOff);
+  }
+}
+
+void MatterClimate::push_state_to_matter() {
+    const uint16_t eid = this->endpoint_id;
+
+  const float current_temperature =
+      this->climate->current_temperature;
+
+  const float target_temperature =
+      this->climate->target_temperature;
+
+  const auto mode = this->climate->mode;
+
+  const uint8_t matter_mode =
+      climate_mode_to_matter_mode(mode);
+
+  chip::DeviceLayer::SystemLayer().ScheduleLambda(
+      [eid,
+       current_temperature,
+       target_temperature,
+       mode,
+       matter_mode]() {
+
+        using namespace chip::app::Clusters;
+
+        //
+        // System mode
+        //
+        esp_matter_attr_val_t mode_val =
+            esp_matter_enum8(matter_mode);
+
+        esp_matter::attribute::update(
+            eid,
+            Thermostat::Id,
+            Thermostat::Attributes::SystemMode::Id,
+            &mode_val);
+
+        //
+        // Current temperature
+        //
+        const bool current_null =
+            std::isnan(current_temperature);
+
+        int16_t current_raw =
+            current_null
+                ? 0
+                : static_cast<int16_t>(
+                      std::lroundf(
+                          current_temperature * 100.0f));
+
+        esp_matter_attr_val_t current_val =
+            esp_matter_nullable_int16(
+                current_null
+                    ? nullable<int16_t>()
+                    : nullable<int16_t>(current_raw));
+
+        esp_matter::attribute::update(
+            eid,
+            Thermostat::Id,
+            Thermostat::Attributes::LocalTemperature::Id,
+            &current_val);
+
+        if (std::isnan(target_temperature))
+          return;
+
+        int16_t target_raw =
+            static_cast<int16_t>(
+                std::lroundf(target_temperature * 100.0f));
+
+        esp_matter_attr_val_t target_val =
+            esp_matter_int16(target_raw);
+
+        if (mode == climate::CLIMATE_MODE_HEAT) {
+          esp_matter::attribute::update(
+              eid,
+              Thermostat::Id,
+              Thermostat::Attributes::
+                  OccupiedHeatingSetpoint::Id,
+              &target_val);
+        } else {
+          //
+          // COOL, AUTO and the usual AC modes use the
+          // cooling setpoint for this first implementation.
+          //
+          esp_matter::attribute::update(
+              eid,
+              Thermostat::Id,
+              Thermostat::Attributes::
+                  OccupiedCoolingSetpoint::Id,
+              &target_val);
+        }
+      });
+}
+
+void MatterClimate::apply_matter_update(
+    uint32_t cluster_id,
+    uint32_t attribute_id,
+    esp_matter_attr_val_t val) {
+
+  using namespace chip::app::Clusters;
+
+  if (cluster_id != Thermostat::Id)
+    return;
+
+  //
+  // HVAC mode
+  //
+  if (attribute_id ==
+      Thermostat::Attributes::SystemMode::Id) {
+
+    auto matter_mode =
+        static_cast<Thermostat::SystemModeEnum>(
+            val.val.u8);
+
+    climate::ClimateMode new_mode;
+
+    switch (matter_mode) {
+      case Thermostat::SystemModeEnum::kOff:
+        new_mode = climate::CLIMATE_MODE_OFF;
+        break;
+
+      case Thermostat::SystemModeEnum::kCool:
+        new_mode = climate::CLIMATE_MODE_COOL;
+        break;
+
+      case Thermostat::SystemModeEnum::kHeat:
+        new_mode = climate::CLIMATE_MODE_HEAT;
+        break;
+
+      case Thermostat::SystemModeEnum::kAuto:
+        new_mode = climate::CLIMATE_MODE_AUTO;
+        break;
+
+      case Thermostat::SystemModeEnum::kFanOnly:
+        new_mode = climate::CLIMATE_MODE_FAN_ONLY;
+        break;
+
+      case Thermostat::SystemModeEnum::kDry:
+        new_mode = climate::CLIMATE_MODE_DRY;
+        break;
+
+      default:
+        return;
+    }
+
+    auto traits = this->climate->get_traits();
+
+    //
+    // OFF is mandatory in ESPHome; reject Matter modes the
+    // underlying climate doesn't advertise.
+    //
+    if (new_mode != climate::CLIMATE_MODE_OFF &&
+        !traits.supports_mode(new_mode)) {
+
+      // AUTO can reasonably map to HEAT_COOL.
+      if (new_mode == climate::CLIMATE_MODE_AUTO &&
+          traits.supports_mode(climate::CLIMATE_MODE_HEAT_COOL)) {
+        new_mode = climate::CLIMATE_MODE_HEAT_COOL;
+      } else {
+        return;
+      }
+    }
+
+    if (this->climate->mode == new_mode)
+      return;
+
+    auto call = this->climate->make_call();
+    call.set_mode(new_mode);
+    call.perform();
+    return;
+  }
+
+  //
+  // Cooling setpoint
+  //
+  if (attribute_id ==
+      Thermostat::Attributes::
+          OccupiedCoolingSetpoint::Id) {
+
+    const float temperature =
+        static_cast<float>(val.val.i16) / 100.0f;
+
+    if (!std::isnan(this->climate->target_temperature) &&
+        std::fabs(
+            this->climate->target_temperature -
+            temperature) < 0.005f)
+      return;
+
+    auto call = this->climate->make_call();
+    call.set_target_temperature(temperature);
+    call.perform();
+    return;
+  }
+
+  //
+  // Heating setpoint
+  //
+  if (attribute_id ==
+      Thermostat::Attributes::
+          OccupiedHeatingSetpoint::Id) {
+
+    const float temperature =
+        static_cast<float>(val.val.i16) / 100.0f;
+
+    if (!std::isnan(this->climate->target_temperature) &&
+        std::fabs(
+            this->climate->target_temperature -
+            temperature) < 0.005f)
+      return;
+
+    auto call = this->climate->make_call();
+    call.set_target_temperature(temperature);
+    call.perform();
+  }
+}
+
+#endif // USE_CLIMATE
 
 #ifdef USE_LIGHT
 // Mirrors the current ESPHome light state to the Matter attributes.
@@ -143,26 +496,56 @@ void MatterLight::apply_matter_update(uint32_t cluster_id,
 }
 #endif // USE_LIGHT
 
-esp_err_t
-endpoint_attribute_update_cb(esp_matter::attribute::callback_type_t type,
-                             uint16_t endpoint_id, uint32_t cluster_id,
-                             uint32_t attribute_id, esp_matter_attr_val_t *val,
-                             void *priv_data) {
-#ifdef USE_LIGHT
+esp_err_t endpoint_attribute_update_cb(
+    esp_matter::attribute::callback_type_t type,
+    uint16_t endpoint_id,
+    uint32_t cluster_id,
+    uint32_t attribute_id,
+    esp_matter_attr_val_t *val,
+    void *priv_data) {
+
   if (type != esp_matter::attribute::POST_UPDATE ||
       global_matter_component == nullptr)
     return ESP_OK;
-  MatterLight *ml = global_matter_component->get_light_by_endpoint(endpoint_id);
-  if (ml == nullptr)
+
+#ifdef USE_LIGHT
+  if (auto *ml =
+          global_matter_component
+              ->get_light_by_endpoint(endpoint_id)) {
+
+    esp_matter_attr_val_t val_copy = *val;
+
+    global_matter_component->defer_to_main_loop(
+        [ml, cluster_id, attribute_id, val_copy]() {
+          ml->apply_matter_update(
+              cluster_id,
+              attribute_id,
+              val_copy);
+        });
+
     return ESP_OK;
-  // This callback runs in the Matter thread; ESPHome entities are main-loop
-  // only.
-  esp_matter_attr_val_t val_copy = *val;
-  global_matter_component->defer_to_main_loop(
-      [ml, cluster_id, attribute_id, val_copy]() {
-        ml->apply_matter_update(cluster_id, attribute_id, val_copy);
-      });
+  }
 #endif
+
+#ifdef USE_CLIMATE
+  if (auto *mc =
+          global_matter_component
+              ->get_climate_by_endpoint(endpoint_id)) {
+
+    esp_matter_attr_val_t val_copy = *val;
+
+    global_matter_component->defer_to_main_loop(
+        [mc, cluster_id, attribute_id, val_copy]() {
+          mc->apply_matter_update(
+              cluster_id,
+              attribute_id,
+              val_copy);
+        });
+
+    return ESP_OK;
+  }
+#endif
+
   return ESP_OK;
 }
 
@@ -198,6 +581,18 @@ void MatterComponent::register_endpoint_callbacks_() {
     ml->light->add_remote_values_listener(ml);
     ml->push_state_to_matter(); // initial sync so controllers read the real
                                 // state
+  }
+#endif
+
+#ifdef USE_CLIMATE
+  for (auto *mc : this->climates_) {
+    mc->climate->add_on_state_callback(
+        [mc](climate::Climate &) {
+          mc->push_state_to_matter();
+        });
+
+
+    mc->push_state_to_matter();
   }
 #endif
 }
