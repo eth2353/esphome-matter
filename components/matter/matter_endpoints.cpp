@@ -97,13 +97,17 @@ bool MatterComponent::create_endpoints_(esp_matter::node_t *node) {
         traits.supports_mode(climate::CLIMATE_MODE_AUTO) ||
         traits.supports_mode(climate::CLIMATE_MODE_HEAT_COOL);
 
-    //
+    if (!supports_heat && !supports_cool) {
+      ESP_LOGE(TAG,
+               "Climate endpoint must support heating or cooling");
+      return false;
+    }
+
     // Matter ControlSequenceOfOperation
     //
-    // 0 = cooling only
-    // 2 = heating only
-    // 4 = cooling + heating
-    //
+    // 0 = Cooling Only
+    // 2 = Heating Only
+    // 4 = Cooling and Heating
     if (supports_heat && supports_cool) {
       config.thermostat.control_sequence_of_operation = 4;
     } else if (supports_heat) {
@@ -112,9 +116,38 @@ bool MatterComponent::create_endpoints_(esp_matter::node_t *node) {
       config.thermostat.control_sequence_of_operation = 0;
     }
 
-    //
-    // Initial local temperature.
-    //
+    // Features MUST be configured before thermostat::create().
+    config.thermostat.feature_flags = 0;
+
+    if (supports_heat) {
+      config.thermostat.feature_flags |=
+          esp_matter::cluster::thermostat::feature::heating::get_id();
+
+      if (!std::isnan(mc->climate->target_temperature)) {
+        config.thermostat.features.heating.occupied_heating_setpoint =
+            static_cast<int16_t>(
+                std::lroundf(mc->climate->target_temperature * 100.0f));
+      }
+    }
+
+    if (supports_cool) {
+      config.thermostat.feature_flags |=
+          esp_matter::cluster::thermostat::feature::cooling::get_id();
+
+      if (!std::isnan(mc->climate->target_temperature)) {
+        config.thermostat.features.cooling.occupied_cooling_setpoint =
+            static_cast<int16_t>(
+                std::lroundf(mc->climate->target_temperature * 100.0f));
+      }
+    }
+
+    // Auto requires both Heating and Cooling.
+    if (supports_auto && supports_heat && supports_cool) {
+      config.thermostat.feature_flags |=
+          esp_matter::cluster::thermostat::feature::auto_mode::get_id();
+    }
+
+    // Initial current temperature.
     if (!std::isnan(mc->climate->current_temperature)) {
       config.thermostat.local_temperature =
           nullable<int16_t>(
@@ -122,6 +155,13 @@ bool MatterComponent::create_endpoints_(esp_matter::node_t *node) {
                   std::lroundf(
                       mc->climate->current_temperature * 100.0f)));
     }
+
+    ESP_LOGD(TAG,
+             "Creating thermostat: heat=%s cool=%s auto=%s features=0x%08" PRIX32,
+             YESNO(supports_heat),
+             YESNO(supports_cool),
+             YESNO(supports_auto),
+             config.thermostat.feature_flags);
 
     esp_matter::endpoint_t *ep =
         esp_matter::endpoint::thermostat::create(
@@ -135,56 +175,14 @@ bool MatterComponent::create_endpoints_(esp_matter::node_t *node) {
       return false;
     }
 
-    auto *thermostat_cluster = esp_matter::cluster::get(
-        ep,
-        chip::app::Clusters::Thermostat::Id
-    );
-
-    if (supports_heat) {
-      esp_matter::cluster::thermostat::feature::heating::config_t heat_config;
-
-      if (!std::isnan(mc->climate->target_temperature)) {
-        heat_config.occupied_heating_setpoint =
-            static_cast<int16_t>(
-                std::lroundf(mc->climate->target_temperature * 100.0f));
-      }
-
-      esp_matter::cluster::thermostat::feature::heating::add(
-          thermostat_cluster,
-          &heat_config);
-    }
-
-    if (supports_cool) {
-      esp_matter::cluster::thermostat::feature::cooling::config_t cool_config;
-
-      if (!std::isnan(mc->climate->target_temperature)) {
-        cool_config.occupied_cooling_setpoint =
-            static_cast<int16_t>(
-                std::lroundf(mc->climate->target_temperature * 100.0f));
-      }
-
-      esp_matter::cluster::thermostat::feature::cooling::add(
-          thermostat_cluster,
-          &cool_config);
-    }
-
-    if (supports_auto && supports_heat && supports_cool) {
-      esp_matter::cluster::thermostat::feature::auto_mode::config_t auto_config;
-
-      esp_matter::cluster::thermostat::feature::auto_mode::add(
-          thermostat_cluster,
-          &auto_config);
-    }
-
     mc->endpoint_id = esp_matter::endpoint::get_id(ep);
     mc->ref->endpoint_id = mc->endpoint_id;
 
-    ESP_LOGD(
-        TAG,
-        "Thermostat endpoint created: id=%u",
-        mc->endpoint_id);
+    ESP_LOGD(TAG,
+             "Thermostat endpoint created: id=%u",
+             mc->endpoint_id);
   }
-#endif // USE_CLIMATE
+#endif
 
   register_client_request_callbacks();
 
