@@ -97,6 +97,8 @@ bool MatterComponent::create_endpoints_(esp_matter::node_t *node) {
         traits.supports_mode(climate::CLIMATE_MODE_AUTO) ||
         traits.supports_mode(climate::CLIMATE_MODE_HEAT_COOL);
 
+    const bool supports_fan_modes = traits.get_supports_fan_modes();
+
     if (!supports_heat && !supports_cool) {
       ESP_LOGE(TAG, "Climate endpoint must support heating or cooling");
       return false;
@@ -168,6 +170,113 @@ bool MatterComponent::create_endpoints_(esp_matter::node_t *node) {
       return false;
     }
 
+    if (supports_fan_modes) {
+      const bool fan_auto =
+          traits.supports_fan_mode(climate::CLIMATE_FAN_AUTO);
+      const bool fan_low =
+          traits.supports_fan_mode(climate::CLIMATE_FAN_LOW);
+      const bool fan_medium =
+          traits.supports_fan_mode(climate::CLIMATE_FAN_MEDIUM);
+      const bool fan_high =
+          traits.supports_fan_mode(climate::CLIMATE_FAN_HIGH);
+
+      esp_matter::cluster::fan_control::config_t fan_config;
+
+      // Base FanControl attributes.
+      // 0=Off, 1=Low, 2=Medium, 3=High, 4=On, 5=Auto.
+      if (mc->climate->fan_mode.has_value()) {
+        switch (*mc->climate->fan_mode) {
+        case climate::CLIMATE_FAN_LOW:
+          fan_config.fan_mode = 1;
+          fan_config.percent_setting = nullable<uint8_t>(33);
+          fan_config.percent_current = 33;
+          break;
+        case climate::CLIMATE_FAN_MEDIUM:
+          fan_config.fan_mode = 2;
+          fan_config.percent_setting = nullable<uint8_t>(66);
+          fan_config.percent_current = 66;
+          break;
+        case climate::CLIMATE_FAN_HIGH:
+          fan_config.fan_mode = 3;
+          fan_config.percent_setting = nullable<uint8_t>(100);
+          fan_config.percent_current = 100;
+          break;
+        case climate::CLIMATE_FAN_AUTO:
+          fan_config.fan_mode = 5;
+          fan_config.percent_setting = nullable<uint8_t>();
+          fan_config.percent_current = 0;
+          break;
+        default:
+          fan_config.fan_mode = 5;
+          fan_config.percent_setting = nullable<uint8_t>();
+          fan_config.percent_current = 0;
+          break;
+        }
+      }
+
+      // Haier exposes Low / Medium / High / Auto.
+      fan_config.fan_mode_sequence =
+          (fan_auto && fan_low && fan_medium && fan_high) ? 2 : 0;
+
+      auto *fan_cluster = esp_matter::cluster::fan_control::create(
+          ep, &fan_config, esp_matter::CLUSTER_FLAG_SERVER);
+      if (fan_cluster == nullptr) {
+        ESP_LOGE(TAG, "Failed to create FanControl cluster");
+        return false;
+      }
+
+      // Expose three discrete physical speeds.
+      esp_matter::cluster::fan_control::feature::multi_speed::config_t
+          multi_speed_config;
+      multi_speed_config.speed_max = 3;
+
+      if (mc->climate->fan_mode.has_value()) {
+        switch (*mc->climate->fan_mode) {
+        case climate::CLIMATE_FAN_LOW:
+          multi_speed_config.speed_setting = nullable<uint8_t>(1);
+          multi_speed_config.speed_current = 1;
+          break;
+        case climate::CLIMATE_FAN_MEDIUM:
+          multi_speed_config.speed_setting = nullable<uint8_t>(2);
+          multi_speed_config.speed_current = 2;
+          break;
+        case climate::CLIMATE_FAN_HIGH:
+          multi_speed_config.speed_setting = nullable<uint8_t>(3);
+          multi_speed_config.speed_current = 3;
+          break;
+        default:
+          multi_speed_config.speed_setting = nullable<uint8_t>();
+          multi_speed_config.speed_current = 0;
+          break;
+        }
+      }
+
+      esp_err_t multi_speed_err =
+          esp_matter::cluster::fan_control::feature::multi_speed::add(
+              fan_cluster, &multi_speed_config);
+      if (multi_speed_err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to add FanControl MultiSpeed feature: %s",
+                 esp_err_to_name(multi_speed_err));
+        return false;
+      }
+
+      if (fan_auto) {
+        esp_err_t auto_err =
+            esp_matter::cluster::fan_control::feature::fan_auto::add(
+                fan_cluster);
+        if (auto_err != ESP_OK) {
+          ESP_LOGE(TAG, "Failed to add FanControl Auto feature: %s",
+                   esp_err_to_name(auto_err));
+          return false;
+        }
+      }
+
+      ESP_LOGI(TAG,
+               "FanControl MultiSpeed added: auto=%s low=%s medium=%s high=%s",
+               YESNO(fan_auto), YESNO(fan_low), YESNO(fan_medium),
+               YESNO(fan_high));
+    }
+
     mc->endpoint_id = esp_matter::endpoint::get_id(ep);
     mc->ref->endpoint_id = mc->endpoint_id;
 
@@ -211,6 +320,50 @@ static uint8_t climate_mode_to_matter_mode(climate::ClimateMode mode) {
 }
 
 
+static uint8_t climate_fan_mode_to_matter(climate::ClimateFanMode mode) {
+  switch (mode) {
+  case climate::CLIMATE_FAN_LOW:
+    return 1;
+  case climate::CLIMATE_FAN_MEDIUM:
+    return 2;
+  case climate::CLIMATE_FAN_HIGH:
+    return 3;
+  case climate::CLIMATE_FAN_ON:
+    return 4;
+  case climate::CLIMATE_FAN_AUTO:
+    return 5;
+  case climate::CLIMATE_FAN_OFF:
+  default:
+    return 0;
+  }
+}
+
+static uint8_t climate_fan_mode_to_speed(climate::ClimateFanMode mode) {
+  switch (mode) {
+  case climate::CLIMATE_FAN_LOW:
+    return 1;
+  case climate::CLIMATE_FAN_MEDIUM:
+    return 2;
+  case climate::CLIMATE_FAN_HIGH:
+    return 3;
+  default:
+    return 0;
+  }
+}
+
+static uint8_t climate_fan_mode_to_percent(climate::ClimateFanMode mode) {
+  switch (mode) {
+  case climate::CLIMATE_FAN_LOW:
+    return 33;
+  case climate::CLIMATE_FAN_MEDIUM:
+    return 66;
+  case climate::CLIMATE_FAN_HIGH:
+    return 100;
+  default:
+    return 0;
+  }
+}
+
 void MatterClimate::push_state_to_matter() {
   const uint16_t eid = this->endpoint_id;
   const float current_temperature = this->climate->current_temperature;
@@ -221,10 +374,23 @@ void MatterClimate::push_state_to_matter() {
 
   const uint8_t matter_mode = climate_mode_to_matter_mode(mode);
 
+  const bool has_fan_mode = this->climate->fan_mode.has_value();
+  const uint8_t matter_fan_mode =
+      has_fan_mode ? climate_fan_mode_to_matter(*this->climate->fan_mode) : 0;
+  const uint8_t matter_speed =
+      has_fan_mode ? climate_fan_mode_to_speed(*this->climate->fan_mode) : 0;
+  const uint8_t matter_percent =
+      has_fan_mode ? climate_fan_mode_to_percent(*this->climate->fan_mode) : 0;
+  const bool fan_is_auto =
+      has_fan_mode && *this->climate->fan_mode == climate::CLIMATE_FAN_AUTO;
+
   chip::DeviceLayer::SystemLayer().ScheduleLambda([eid, current_temperature,
 
                                                    target_temperature, mode,
-                                                   matter_mode]() {
+                                                   matter_mode, has_fan_mode,
+                                                   matter_fan_mode, matter_speed,
+                                                   matter_percent,
+                                                   fan_is_auto]() {
     using namespace chip::app::Clusters;
 
     //
@@ -251,6 +417,41 @@ void MatterClimate::push_state_to_matter() {
     esp_matter::attribute::update(eid, Thermostat::Id,
                                   Thermostat::Attributes::LocalTemperature::Id,
                                   &current_val);
+
+    if (has_fan_mode) {
+      esp_matter_attr_val_t fan_mode_val = esp_matter_enum8(matter_fan_mode);
+      esp_matter::attribute::update(
+          eid, FanControl::Id, FanControl::Attributes::FanMode::Id,
+          &fan_mode_val);
+
+      esp_matter_attr_val_t speed_current_val =
+          esp_matter_uint8(matter_speed);
+      esp_matter::attribute::update(
+          eid, FanControl::Id, FanControl::Attributes::SpeedCurrent::Id,
+          &speed_current_val);
+
+      esp_matter_attr_val_t speed_setting_val =
+          esp_matter_nullable_uint8(
+              fan_is_auto ? nullable<uint8_t>()
+                          : nullable<uint8_t>(matter_speed));
+      esp_matter::attribute::update(
+          eid, FanControl::Id, FanControl::Attributes::SpeedSetting::Id,
+          &speed_setting_val);
+
+      esp_matter_attr_val_t percent_current_val =
+          esp_matter_uint8(matter_percent);
+      esp_matter::attribute::update(
+          eid, FanControl::Id, FanControl::Attributes::PercentCurrent::Id,
+          &percent_current_val);
+
+      esp_matter_attr_val_t percent_setting_val =
+          esp_matter_nullable_uint8(
+              fan_is_auto ? nullable<uint8_t>()
+                          : nullable<uint8_t>(matter_percent));
+      esp_matter::attribute::update(
+          eid, FanControl::Id, FanControl::Attributes::PercentSetting::Id,
+          &percent_setting_val);
+    }
 
     if (std::isnan(target_temperature))
       return;
@@ -381,6 +582,77 @@ void MatterClimate::apply_matter_update(uint32_t cluster_id,
       call.set_target_temperature(temperature);
       call.perform();
     }
+  }
+
+  if (cluster_id == FanControl::Id) {
+    climate::ClimateFanMode new_fan_mode;
+
+    if (attribute_id == FanControl::Attributes::FanMode::Id) {
+      switch (val.val.u8) {
+      case 1:
+        new_fan_mode = climate::CLIMATE_FAN_LOW;
+        break;
+      case 2:
+        new_fan_mode = climate::CLIMATE_FAN_MEDIUM;
+        break;
+      case 3:
+        new_fan_mode = climate::CLIMATE_FAN_HIGH;
+        break;
+      case 5:
+        new_fan_mode = climate::CLIMATE_FAN_AUTO;
+        break;
+      default:
+        return;
+      }
+    } else if (attribute_id == FanControl::Attributes::SpeedSetting::Id) {
+      // SpeedSetting is nullable. A null setting is treated as Auto.
+      if (val.val.u8 == UINT8_MAX) {
+        new_fan_mode = climate::CLIMATE_FAN_AUTO;
+      } else {
+        switch (val.val.u8) {
+        case 1:
+          new_fan_mode = climate::CLIMATE_FAN_LOW;
+          break;
+        case 2:
+          new_fan_mode = climate::CLIMATE_FAN_MEDIUM;
+          break;
+        case 3:
+          new_fan_mode = climate::CLIMATE_FAN_HIGH;
+          break;
+        default:
+          return;
+        }
+      }
+    } else if (attribute_id == FanControl::Attributes::PercentSetting::Id) {
+      if (val.val.u8 == UINT8_MAX) {
+        new_fan_mode = climate::CLIMATE_FAN_AUTO;
+      } else if (val.val.u8 <= 33) {
+        new_fan_mode = climate::CLIMATE_FAN_LOW;
+      } else if (val.val.u8 <= 66) {
+        new_fan_mode = climate::CLIMATE_FAN_MEDIUM;
+      } else {
+        new_fan_mode = climate::CLIMATE_FAN_HIGH;
+      }
+    } else {
+      return;
+    }
+
+    auto traits = this->climate->get_traits();
+    if (!traits.supports_fan_mode(new_fan_mode))
+      return;
+
+    if (this->climate->fan_mode.has_value() &&
+        *this->climate->fan_mode == new_fan_mode)
+      return;
+
+    ESP_LOGI(TAG, "Matter fan update: cluster attr=0x%08" PRIX32
+                  " -> ESPHome fan mode=%u",
+             attribute_id, static_cast<unsigned>(new_fan_mode));
+
+    auto call = this->climate->make_call();
+    call.set_fan_mode(new_fan_mode);
+    call.perform();
+    return;
   }
 }
 
