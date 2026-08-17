@@ -104,6 +104,21 @@ bool MatterComponent::create_endpoints_(esp_matter::node_t *node) {
 
     const bool supports_fan_modes = traits.get_supports_fan_modes();
 
+    ESP_LOGI(TAG, "Climate fan support: %s",
+         YESNO(traits.get_supports_fan_modes()));
+
+    ESP_LOGI(TAG, "Fan AUTO: %s",
+             YESNO(traits.supports_fan_mode(climate::CLIMATE_FAN_AUTO)));
+
+    ESP_LOGI(TAG, "Fan LOW: %s",
+             YESNO(traits.supports_fan_mode(climate::CLIMATE_FAN_LOW)));
+
+    ESP_LOGI(TAG, "Fan MEDIUM: %s",
+             YESNO(traits.supports_fan_mode(climate::CLIMATE_FAN_MEDIUM)));
+
+    ESP_LOGI(TAG, "Fan HIGH: %s",
+             YESNO(traits.supports_fan_mode(climate::CLIMATE_FAN_HIGH)));
+
     // Matter ControlSequenceOfOperation
     //
     // 0 = Cooling Only
@@ -331,6 +346,14 @@ static uint8_t climate_fan_mode_to_matter(climate::ClimateFanMode mode) {
 void MatterClimate::push_state_to_matter() {
   const uint16_t eid = this->endpoint_id;
 
+  ESP_LOGI(TAG, "push_state_to_matter: fan_mode has_value=%s",
+           YESNO(this->climate->fan_mode.has_value()));
+
+  if (this->climate->fan_mode.has_value()) {
+    ESP_LOGI(TAG, "Current ESPHome fan mode=%u",
+             static_cast<unsigned>(*this->climate->fan_mode));
+  }
+
   const float current_temperature = this->climate->current_temperature;
 
   const float target_temperature = this->climate->target_temperature;
@@ -515,6 +538,12 @@ void MatterClimate::apply_matter_update(uint32_t cluster_id,
   }
 
   if (cluster_id == FanControl::Id) {
+    ESP_LOGI(TAG,
+           "Matter FanControl update: attribute=0x%08" PRIX32
+           " value=%u",
+           attribute_id,
+           val.val.u8);
+
     if (attribute_id == FanControl::Attributes::FanMode::Id) {
       const uint8_t matter_fan_mode = val.val.u8;
 
