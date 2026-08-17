@@ -271,7 +271,22 @@ bool MatterComponent::create_endpoints_(esp_matter::node_t *node) {
         return false;
       }
 
-      ESP_LOGD(TAG, "FanControl cluster added to thermostat endpoint");
+      // Advertise this same endpoint as both a Thermostat and a Fan.
+      // The thermostat helper already added the Thermostat device type;
+      // adding the Fan device type gives controllers explicit metadata
+      // that this endpoint also exposes fan-speed control.
+      esp_err_t fan_type_err = esp_matter::endpoint::add_device_type(
+          ep, ESP_MATTER_FAN_DEVICE_TYPE_ID,
+          ESP_MATTER_FAN_DEVICE_TYPE_VERSION);
+
+      if (fan_type_err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to add Fan device type: %s",
+                 esp_err_to_name(fan_type_err));
+        return false;
+      }
+
+      ESP_LOGI(TAG,
+               "FanControl cluster + Fan device type added to thermostat endpoint");
     }
 
     mc->endpoint_id = esp_matter::endpoint::get_id(ep);
