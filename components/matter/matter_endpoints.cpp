@@ -102,23 +102,6 @@ bool MatterComponent::create_endpoints_(esp_matter::node_t *node) {
       return false;
     }
 
-    const bool supports_fan_modes = traits.get_supports_fan_modes();
-
-    ESP_LOGI(TAG, "Climate fan support: %s",
-         YESNO(traits.get_supports_fan_modes()));
-
-    ESP_LOGI(TAG, "Fan AUTO: %s",
-             YESNO(traits.supports_fan_mode(climate::CLIMATE_FAN_AUTO)));
-
-    ESP_LOGI(TAG, "Fan LOW: %s",
-             YESNO(traits.supports_fan_mode(climate::CLIMATE_FAN_LOW)));
-
-    ESP_LOGI(TAG, "Fan MEDIUM: %s",
-             YESNO(traits.supports_fan_mode(climate::CLIMATE_FAN_MEDIUM)));
-
-    ESP_LOGI(TAG, "Fan HIGH: %s",
-             YESNO(traits.supports_fan_mode(climate::CLIMATE_FAN_HIGH)));
-
     // Matter ControlSequenceOfOperation
     //
     // 0 = Cooling Only
@@ -185,98 +168,6 @@ bool MatterComponent::create_endpoints_(esp_matter::node_t *node) {
       return false;
     }
 
-    if (supports_fan_modes) {
-      esp_matter::cluster::fan_control::config_t fan_config;
-
-      const bool fan_auto = traits.supports_fan_mode(climate::CLIMATE_FAN_AUTO);
-
-      const bool fan_low = traits.supports_fan_mode(climate::CLIMATE_FAN_LOW);
-
-      const bool fan_medium =
-          traits.supports_fan_mode(climate::CLIMATE_FAN_MEDIUM);
-
-      const bool fan_high = traits.supports_fan_mode(climate::CLIMATE_FAN_HIGH);
-
-      ESP_LOGD(TAG, "Fan modes: auto=%s low=%s medium=%s high=%s",
-               YESNO(fan_auto), YESNO(fan_low), YESNO(fan_medium),
-               YESNO(fan_high));
-
-      //
-      // Matter FanModeSequence:
-      //
-      // 0 = Off / Low / Medium / High
-      // 1 = Off / Low / High
-      // 2 = Off / Low / Medium / High / Auto
-      // 3 = Off / Low / High / Auto
-      // 4 = Off / High / Auto
-      // 5 = Off / High
-      //
-      if (fan_low && fan_medium && fan_high && fan_auto) {
-        fan_config.fan_mode_sequence = 2;
-      } else if (fan_low && fan_high && fan_auto) {
-        fan_config.fan_mode_sequence = 3;
-      } else if (fan_high && fan_auto) {
-        fan_config.fan_mode_sequence = 4;
-      } else if (fan_low && fan_medium && fan_high) {
-        fan_config.fan_mode_sequence = 0;
-      } else if (fan_low && fan_high) {
-        fan_config.fan_mode_sequence = 1;
-      } else {
-        fan_config.fan_mode_sequence = 5;
-      }
-
-      //
-      // Initial FanMode.
-      //
-      // Matter FanMode:
-      // 0 Off
-      // 1 Low
-      // 2 Medium
-      // 3 High
-      // 4 On
-      // 5 Auto
-      //
-      if (mc->climate->fan_mode.has_value()) {
-        switch (*mc->climate->fan_mode) {
-        case climate::CLIMATE_FAN_LOW:
-          fan_config.fan_mode = 1;
-          break;
-
-        case climate::CLIMATE_FAN_MEDIUM:
-          fan_config.fan_mode = 2;
-          break;
-
-        case climate::CLIMATE_FAN_HIGH:
-          fan_config.fan_mode = 3;
-          break;
-
-        case climate::CLIMATE_FAN_ON:
-          fan_config.fan_mode = 4;
-          break;
-
-        case climate::CLIMATE_FAN_AUTO:
-          fan_config.fan_mode = 5;
-          break;
-
-        default:
-          fan_config.fan_mode = 5;
-          break;
-        }
-      }
-
-      auto *fan_cluster = esp_matter::cluster::fan_control::create(
-          ep, &fan_config, esp_matter::CLUSTER_FLAG_SERVER);
-
-      if (fan_cluster == nullptr) {
-        ESP_LOGE(TAG, "Failed to create FanControl cluster");
-        return false;
-      }
-
-      ESP_LOGI(
-          TAG,
-          "FanControl cluster added to native Room Air Conditioner endpoint");
-    }
-
     mc->endpoint_id = esp_matter::endpoint::get_id(ep);
     mc->ref->endpoint_id = mc->endpoint_id;
 
@@ -319,48 +210,9 @@ static uint8_t climate_mode_to_matter_mode(climate::ClimateMode mode) {
   }
 }
 
-static uint8_t climate_fan_mode_to_matter(climate::ClimateFanMode mode) {
-  switch (mode) {
-  case climate::CLIMATE_FAN_OFF:
-    return 0;
-
-  case climate::CLIMATE_FAN_LOW:
-    return 1;
-
-  case climate::CLIMATE_FAN_MEDIUM:
-    return 2;
-
-  case climate::CLIMATE_FAN_HIGH:
-    return 3;
-
-  case climate::CLIMATE_FAN_ON:
-    return 4;
-
-  case climate::CLIMATE_FAN_AUTO:
-    return 5;
-
-  default:
-    // Modes such as QUIET/MIDDLE/etc. have no clean
-    // basic Matter FanMode equivalent.
-    return 5;
-  }
-}
 
 void MatterClimate::push_state_to_matter() {
   const uint16_t eid = this->endpoint_id;
-
-  ESP_LOGI(TAG, "push_state_to_matter: fan_mode has_value=%s",
-           YESNO(this->climate->fan_mode.has_value()));
-
-  if (this->climate->fan_mode.has_value()) {
-    ESP_LOGI(TAG, "Current ESPHome fan mode=%u",
-             static_cast<unsigned>(*this->climate->fan_mode));
-  }
-
-  ESP_LOGI(TAG, "Matter climate endpoint=%u fan_mode=%s",
-           this->endpoint_id,
-           this->climate->fan_mode.has_value() ? "present" : "missing");
-
   const float current_temperature = this->climate->current_temperature;
 
   const float target_temperature = this->climate->target_temperature;
@@ -369,16 +221,10 @@ void MatterClimate::push_state_to_matter() {
 
   const uint8_t matter_mode = climate_mode_to_matter_mode(mode);
 
-  const bool has_fan_mode = this->climate->fan_mode.has_value();
-
-  const uint8_t matter_fan_mode =
-      has_fan_mode ? climate_fan_mode_to_matter(*this->climate->fan_mode) : 0;
-
   chip::DeviceLayer::SystemLayer().ScheduleLambda([eid, current_temperature,
 
                                                    target_temperature, mode,
-                                                   matter_mode, has_fan_mode,
-                                                   matter_fan_mode]() {
+                                                   matter_mode]() {
     using namespace chip::app::Clusters;
 
     //
@@ -427,17 +273,6 @@ void MatterClimate::push_state_to_matter() {
       esp_matter::attribute::update(
           eid, Thermostat::Id,
           Thermostat::Attributes::OccupiedCoolingSetpoint::Id, &target_val);
-    }
-
-    if (has_fan_mode) {
-      esp_matter_attr_val_t fan_val = esp_matter_enum8(matter_fan_mode);
-
-      esp_err_t fan_err = esp_matter::attribute::update(
-          eid, FanControl::Id, FanControl::Attributes::FanMode::Id, &fan_val);
-
-      ESP_LOGI(TAG,
-               "FanControl push: endpoint=%u Matter=%u result=%s",
-               eid, matter_fan_mode, esp_err_to_name(fan_err));
     }
   });
 }
@@ -545,66 +380,6 @@ void MatterClimate::apply_matter_update(uint32_t cluster_id,
       auto call = this->climate->make_call();
       call.set_target_temperature(temperature);
       call.perform();
-    }
-  }
-
-  if (cluster_id == FanControl::Id) {
-    ESP_LOGI(TAG,
-           "Matter FanControl update: attribute=0x%08" PRIX32
-           " value=%u",
-           attribute_id,
-           val.val.u8);
-
-    if (attribute_id == FanControl::Attributes::FanMode::Id) {
-      const uint8_t matter_fan_mode = val.val.u8;
-
-      climate::ClimateFanMode new_fan_mode;
-
-      switch (matter_fan_mode) {
-      case 0:
-        new_fan_mode = climate::CLIMATE_FAN_OFF;
-        break;
-
-      case 1:
-        new_fan_mode = climate::CLIMATE_FAN_LOW;
-        break;
-
-      case 2:
-        new_fan_mode = climate::CLIMATE_FAN_MEDIUM;
-        break;
-
-      case 3:
-        new_fan_mode = climate::CLIMATE_FAN_HIGH;
-        break;
-
-      case 4:
-        new_fan_mode = climate::CLIMATE_FAN_ON;
-        break;
-
-      case 5:
-        new_fan_mode = climate::CLIMATE_FAN_AUTO;
-        break;
-
-      default:
-        return;
-      }
-
-      auto traits = this->climate->get_traits();
-
-      if (!traits.supports_fan_mode(new_fan_mode))
-        return;
-
-      if (this->climate->fan_mode.has_value() &&
-          *this->climate->fan_mode == new_fan_mode)
-        return;
-
-      ESP_LOGD(TAG, "Matter fan mode update: %u", matter_fan_mode);
-
-      auto call = this->climate->make_call();
-      call.set_fan_mode(new_fan_mode);
-      call.perform();
-
-      return;
     }
   }
 }
