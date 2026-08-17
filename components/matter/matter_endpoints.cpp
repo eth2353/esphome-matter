@@ -83,7 +83,7 @@ bool MatterComponent::create_endpoints_(esp_matter::node_t *node) {
   for (auto *mc : this->climates_) {
     auto traits = mc->climate->get_traits();
 
-    esp_matter::endpoint::room_air_conditioner::config_t config;
+    esp_matter::endpoint::thermostat::config_t config;
 
     const bool supports_heat =
         traits.supports_mode(climate::CLIMATE_MODE_HEAT) ||
@@ -162,11 +162,11 @@ bool MatterComponent::create_endpoints_(esp_matter::node_t *node) {
         config.thermostat.feature_flags);
 
     esp_matter::endpoint_t *ep =
-        esp_matter::endpoint::room_air_conditioner::create(
+        esp_matter::endpoint::thermostat::create(
             node, &config, esp_matter::ENDPOINT_FLAG_NONE, nullptr);
 
     if (ep == nullptr) {
-      ESP_LOGE(TAG, "Failed to create Room Air Conditioner endpoint");
+      ESP_LOGE(TAG, "Failed to create thermostat endpoint");
       return false;
     }
 
@@ -272,7 +272,7 @@ bool MatterComponent::create_endpoints_(esp_matter::node_t *node) {
       }
 
       ESP_LOGI(TAG,
-               "FanControl MultiSpeed added: auto=%s low=%s medium=%s high=%s",
+               "Thermostat FanControl MultiSpeed added: auto=%s low=%s medium=%s high=%s",
                YESNO(fan_auto), YESNO(fan_low), YESNO(fan_medium),
                YESNO(fan_high));
     }
@@ -280,7 +280,7 @@ bool MatterComponent::create_endpoints_(esp_matter::node_t *node) {
     mc->endpoint_id = esp_matter::endpoint::get_id(ep);
     mc->ref->endpoint_id = mc->endpoint_id;
 
-    ESP_LOGD(TAG, "Room Air Conditioner endpoint created: id=%u", mc->endpoint_id);
+    ESP_LOGD(TAG, "Thermostat endpoint created: id=%u", mc->endpoint_id);
   }
 #endif
 
